@@ -34,6 +34,14 @@ model_options:
       value: null
       type: str
       description: "Your API key for the OpenAI API. Required for non-local API usage."
+    use_proxy:
+      value: false
+      type: bool
+      description: "Set to true to route OpenAI API traffic through a proxy."
+    proxy_url:
+      value: null
+      type: str
+      description: "Proxy URL, e.g. socks5://user:pass@host:port. Supports SOCKS5 and HTTP proxies."
 
   # Configuration options for the faster-whisper model
   local:

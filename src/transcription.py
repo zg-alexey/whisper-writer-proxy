@@ -1,5 +1,8 @@
 import io
 import os
+from urllib.parse import urlparse
+
+import httpx
 import numpy as np
 import soundfile as sf
 from faster_whisper import WhisperModel
@@ -68,10 +71,34 @@ def transcribe_api(audio_data):
     Transcribe an audio file using the OpenAI API.
     """
     model_options = ConfigManager.get_config_section('model_options')
-    client = OpenAI(
-        api_key=os.getenv('OPENAI_API_KEY') or None,
-        base_url=model_options['api']['base_url'] or 'https://api.openai.com/v1'
-    )
+    api_options = model_options['api']
+    base_url = api_options.get('base_url') or 'https://api.openai.com/v1'
+
+    http_client = None
+    if api_options.get('use_proxy'):
+        proxy_url = api_options.get('proxy_url') or os.getenv('OPENAI_PROXY_URL')
+        if proxy_url:
+            try:
+                http_client = httpx.Client(proxies=proxy_url, timeout=httpx.Timeout(120.0, connect=30.0))
+                parsed_proxy = urlparse(proxy_url)
+                safe_proxy = f"{parsed_proxy.scheme}://{parsed_proxy.hostname}"
+                if parsed_proxy.port:
+                    safe_proxy = f"{safe_proxy}:{parsed_proxy.port}"
+                ConfigManager.console_print(f'Routing OpenAI API traffic through proxy: {safe_proxy}')
+            except Exception as exc:
+                ConfigManager.console_print(f'Failed to configure proxy ({exc}). Falling back to direct connection.')
+                http_client = None
+        else:
+            ConfigManager.console_print('Proxy usage enabled but no proxy URL provided. Falling back to direct connection.')
+
+    client_args = {
+        'api_key': os.getenv('OPENAI_API_KEY') or None,
+        'base_url': base_url,
+    }
+    if http_client:
+        client_args['http_client'] = http_client
+
+    client = OpenAI(**client_args)
 
     # Convert numpy array to WAV file
     byte_io = io.BytesIO()
@@ -79,14 +106,17 @@ def transcribe_api(audio_data):
     sf.write(byte_io, audio_data, sample_rate, format='wav')
     byte_io.seek(0)
 
-    response = client.audio.transcriptions.create(
-        model=model_options['api']['model'],
-        file=('audio.wav', byte_io, 'audio/wav'),
-        language=model_options['common']['language'],
-        prompt=model_options['common']['initial_prompt'],
-        temperature=model_options['common']['temperature'],
-    )
-    return response.text
+    try:
+        response = client.audio.transcriptions.create(
+            model=api_options['model'],
+            file=('audio.wav', byte_io, 'audio/wav'),
+            language=model_options['common']['language'],
+            prompt=model_options['common']['initial_prompt'],
+            temperature=model_options['common']['temperature'],
+        )
+        return response.text
+    finally:
+        client.close()
 
 def post_process_transcription(transcription):
     """
