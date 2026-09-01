@@ -1,4 +1,5 @@
 import io
+import logging
 import os
 from urllib.parse import urlparse
 
@@ -9,6 +10,9 @@ from faster_whisper import WhisperModel
 from openai import OpenAI
 
 from utils import ConfigManager
+
+
+logger = logging.getLogger(__name__)
 
 def create_local_model():
     """
@@ -58,13 +62,16 @@ def transcribe_local(audio_data, local_model=None):
     # Convert int16 to float32
     audio_data_float = audio_data.astype(np.float32) / 32768.0
 
+    logger.info("Starting local transcription (samples=%s)", audio_data.size)
     response = local_model.transcribe(audio=audio_data_float,
                                       language=model_options['common']['language'],
                                       initial_prompt=model_options['common']['initial_prompt'],
                                       condition_on_previous_text=model_options['local']['condition_on_previous_text'],
                                       temperature=model_options['common']['temperature'],
                                       vad_filter=model_options['local']['vad_filter'],)
-    return ''.join([segment.text for segment in list(response[0])])
+    text = ''.join([segment.text for segment in list(response[0])])
+    logger.info("Local transcription response received (characters=%s)", len(text))
+    return text
 
 def transcribe_api(audio_data):
     """
@@ -73,6 +80,8 @@ def transcribe_api(audio_data):
     model_options = ConfigManager.get_config_section('model_options')
     api_options = model_options['api']
     base_url = api_options.get('base_url') or 'https://api.openai.com/v1'
+    parsed_endpoint = urlparse(base_url)
+    safe_endpoint = f"{parsed_endpoint.scheme}://{parsed_endpoint.netloc}{parsed_endpoint.path}"
 
     http_client = None
     if api_options.get('use_proxy'):
@@ -86,7 +95,9 @@ def transcribe_api(audio_data):
                     safe_proxy = f"{safe_proxy}:{parsed_proxy.port}"
                 ConfigManager.console_print(f'Routing OpenAI API traffic through proxy: {safe_proxy}')
             except Exception as exc:
-                ConfigManager.console_print(f'Failed to configure proxy ({exc}). Falling back to direct connection.')
+                ConfigManager.console_print(
+                    f'Failed to configure proxy ({type(exc).__name__}). Falling back to direct connection.'
+                )
                 http_client = None
         else:
             ConfigManager.console_print('Proxy usage enabled but no proxy URL provided. Falling back to direct connection.')
@@ -98,6 +109,13 @@ def transcribe_api(audio_data):
     if http_client:
         client_args['http_client'] = http_client
 
+    logger.info(
+        "Preparing API transcription: endpoint=%s, model=%s, api_key=%s, proxy=%s",
+        safe_endpoint,
+        api_options.get('model'),
+        'set' if client_args['api_key'] else 'missing',
+        'enabled' if http_client else 'disabled',
+    )
     client = OpenAI(**client_args)
 
     # Convert numpy array to WAV file
@@ -105,6 +123,12 @@ def transcribe_api(audio_data):
     sample_rate = ConfigManager.get_config_section('recording_options').get('sample_rate') or 16000
     sf.write(byte_io, audio_data, sample_rate, format='wav')
     byte_io.seek(0)
+    logger.info(
+        "Sending transcription request (samples=%s, duration=%.2fs, wav_bytes=%s)",
+        audio_data.size,
+        audio_data.size / sample_rate,
+        byte_io.getbuffer().nbytes,
+    )
 
     try:
         response = client.audio.transcriptions.create(
@@ -114,6 +138,7 @@ def transcribe_api(audio_data):
             prompt=model_options['common']['initial_prompt'],
             temperature=model_options['common']['temperature'],
         )
+        logger.info("API transcription response received (characters=%s)", len(response.text or ''))
         return response.text
     finally:
         client.close()

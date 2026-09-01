@@ -154,6 +154,40 @@ WhisperWriter uses a configuration file to customize its behaviour. To set up th
 
 If any of the configuration options are invalid or not provided, the program will use the default values.
 
+## Debugging recording, API, and typing failures
+
+Runs started with `run-whisper-writer.bat` are logged to `logs/whisper-writer.log`.
+The log is appended across restarts. Credentials are reported only as `set` or `missing`, but
+the completed transcription text is included, so review the file before sharing it.
+To watch it live in PowerShell:
+
+```powershell
+Get-Content .\logs\whisper-writer.log -Wait
+```
+
+Start the app, make one short recording, wait for the result, and then exit the app.
+Use these markers to locate the failing stage:
+
+- `Audio input` identifies the microphone selected by PortAudio. `Available audio input devices`
+  lists the indices that can be entered as `sound_device` in Settings.
+- `Audio levels` reports normalized `peak` and `rms` values. A nearly silent warning usually
+  means the wrong input, a muted microphone, or denied Windows microphone permission.
+- `Sending transcription request` followed by `API transcription response received` confirms
+  API access. A traceback between those messages identifies endpoint, proxy, authentication,
+  model, rate-limit, or connectivity failures.
+- `Received transcription result` confirms text reached the UI thread. `Finished typing transcription`
+  confirms keyboard simulation ran; if text is still absent, focus or input
+  simulation is the likely problem.
+
+If the batch file creates no new session marker at all, verify the virtual environment first:
+
+```powershell
+.\venv\Scripts\python.exe --version
+```
+
+An `Unable to create process` error means the environment points to a Python installation that
+was moved or removed and needs to be recreated before app-level diagnostics can run.
+
 ## Known Issues
 
 You can see all reported issues and their current status in our [Issue Tracker](https://github.com/savbell/whisper-writer/issues). If you encounter a problem, please [open a new issue](https://github.com/savbell/whisper-writer/issues/new) with a detailed description and reproduction steps, if possible.

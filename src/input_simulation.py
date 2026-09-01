@@ -1,3 +1,4 @@
+import logging
 import subprocess
 import os
 import signal
@@ -5,6 +6,9 @@ import time
 from pynput.keyboard import Controller as PynputController
 
 from utils import ConfigManager
+
+
+logger = logging.getLogger(__name__)
 
 def run_command_or_exit_on_failure(command):
     """
@@ -59,12 +63,29 @@ class InputSimulator:
             text (str): The text to type.
         """
         interval = ConfigManager.get_config_value('post_processing', 'writing_key_press_delay')
-        if self.input_method == 'pynput':
-            self._typewrite_pynput(text, interval)
-        elif self.input_method == 'ydotool':
-            self._typewrite_ydotool(text, interval)
-        elif self.input_method == 'dotool':
-            self._typewrite_dotool(text, interval)
+        logger.info(
+            "Typing transcription (method=%s, characters=%s, interval=%s)",
+            self.input_method,
+            len(text),
+            interval,
+        )
+        if not text:
+            logger.warning("Nothing will be typed because the transcription result is empty")
+            return
+
+        try:
+            if self.input_method == 'pynput':
+                self._typewrite_pynput(text, interval)
+            elif self.input_method == 'ydotool':
+                self._typewrite_ydotool(text, interval)
+            elif self.input_method == 'dotool':
+                self._typewrite_dotool(text, interval)
+            else:
+                raise ValueError(f"Unsupported input method: {self.input_method!r}")
+        except Exception:
+            logger.exception("Failed to type the transcription into the active window")
+            raise
+        logger.info("Finished typing transcription")
 
     def _typewrite_pynput(self, text, interval):
         """

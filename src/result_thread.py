@@ -1,5 +1,5 @@
+import logging
 import time
-import traceback
 import numpy as np
 import sounddevice as sd
 import tempfile
@@ -11,6 +11,9 @@ from threading import Event
 
 from transcription import transcribe
 from utils import ConfigManager
+
+
+logger = logging.getLogger(__name__)
 
 
 class ResultThread(QThread):
@@ -31,6 +34,7 @@ class ResultThread(QThread):
 
     statusSignal = pyqtSignal(str)
     resultSignal = pyqtSignal(str)
+    _audio_devices_logged = False
 
     def __init__(self, local_model=None):
         """
@@ -97,8 +101,8 @@ class ResultThread(QThread):
             self.statusSignal.emit('idle')
             self.resultSignal.emit(result)
 
-        except Exception as e:
-            traceback.print_exc()
+        except Exception:
+            logger.exception("Recording/transcription thread failed")
             self.statusSignal.emit('error')
             self.resultSignal.emit('')
         finally:
@@ -112,6 +116,41 @@ class ResultThread(QThread):
         """
         recording_options = ConfigManager.get_config_section('recording_options')
         self.sample_rate = recording_options.get('sample_rate') or 16000
+        sound_device = recording_options.get('sound_device')
+        if isinstance(sound_device, str) and sound_device.strip().isdigit():
+            sound_device = int(sound_device.strip())
+
+        if not self._audio_devices_logged:
+            input_devices = []
+            for index, info in enumerate(sd.query_devices()):
+                if info.get('max_input_channels', 0) > 0:
+                    input_devices.append(
+                        f"{index}:{info.get('name')!r} "
+                        f"(channels={info.get('max_input_channels')}, "
+                        f"default_rate={info.get('default_samplerate')})"
+                    )
+            logger.info("Available audio input devices: %s", "; ".join(input_devices) or "none")
+            ResultThread._audio_devices_logged = True
+
+        default_input_device = sd.default.device[0]
+        selected_device = sound_device if sound_device is not None else default_input_device
+        device_info = sd.query_devices(selected_device, 'input')
+        logger.info(
+            "Audio input: requested=%r, selected_index=%s, name=%r, "
+            "max_input_channels=%s, default_samplerate=%s, requested_samplerate=%s",
+            recording_options.get('sound_device'),
+            selected_device,
+            device_info.get('name'),
+            device_info.get('max_input_channels'),
+            device_info.get('default_samplerate'),
+            self.sample_rate,
+        )
+        sd.check_input_settings(
+            device=selected_device,
+            channels=1,
+            dtype='int16',
+            samplerate=self.sample_rate,
+        )
         frame_duration_ms = 30  # 30ms frame duration for WebRTC VAD
         frame_size = int(self.sample_rate * (frame_duration_ms / 1000.0))
         silence_duration_ms = recording_options.get('silence_duration') or 900
@@ -140,7 +179,7 @@ class ResultThread(QThread):
             data_ready.set()
 
         with sd.InputStream(samplerate=self.sample_rate, channels=1, dtype='int16',
-                            blocksize=frame_size, device=recording_options.get('sound_device'),
+                            blocksize=frame_size, device=selected_device,
                             callback=audio_callback):
             while self.is_running and self.is_recording:
                 data_ready.wait()
@@ -174,7 +213,21 @@ class ResultThread(QThread):
         audio_data = np.array(recording, dtype=np.int16)
         duration = len(audio_data) / self.sample_rate
 
+        if audio_data.size:
+            normalized = audio_data.astype(np.float64) / 32768.0
+            peak = float(np.max(np.abs(normalized)))
+            rms = float(np.sqrt(np.mean(np.square(normalized))))
+        else:
+            peak = 0.0
+            rms = 0.0
+
         ConfigManager.console_print(f'Recording finished. Size: {audio_data.size} samples, Duration: {duration:.2f} seconds')
+        logger.info("Audio levels: peak=%.4f, rms=%.4f", peak, rms)
+        if peak < 0.005:
+            logger.warning(
+                "Recorded audio is nearly silent (peak=%.4f); check the selected input device and Windows microphone permissions",
+                peak,
+            )
 
         min_duration_ms = recording_options.get('min_duration') or 100
 

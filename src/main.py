@@ -1,6 +1,9 @@
+import logging
 import os
 import sys
 import time
+from pathlib import Path
+from urllib.parse import urlparse
 from audioplayer import AudioPlayer
 from pynput.keyboard import Controller
 from PyQt5.QtCore import QObject, QProcess
@@ -17,6 +20,31 @@ from input_simulation import InputSimulator
 from utils import ConfigManager
 
 
+log_file = Path(__file__).resolve().parent.parent / 'logs' / 'whisper-writer.log'
+log_file.parent.mkdir(exist_ok=True)
+logging.basicConfig(
+    filename=log_file,
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [app pid=%(process)d] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    filemode="a",
+    encoding="utf-8",
+    force=True,
+)
+logger = logging.getLogger(__name__)
+
+
+def log_unhandled_exception(exc_type, exc_value, exc_traceback):
+    """Keep otherwise invisible GUI exceptions in the session log."""
+    logger.critical(
+        "Unhandled exception",
+        exc_info=(exc_type, exc_value, exc_traceback),
+    )
+
+
+sys.excepthook = log_unhandled_exception
+
+
 class WhisperWriterApp(QObject):
     def __init__(self):
         """
@@ -27,6 +55,7 @@ class WhisperWriterApp(QObject):
         self.app.setWindowIcon(QIcon(os.path.join('assets', 'ww-logo.png')))
 
         ConfigManager.initialize()
+        self.log_effective_config()
 
         self.settings_window = SettingsWindow()
         self.settings_window.settings_closed.connect(self.on_settings_closed)
@@ -38,10 +67,34 @@ class WhisperWriterApp(QObject):
             print('No valid configuration file found. Opening settings window...')
             self.settings_window.show()
 
+    def log_effective_config(self):
+        """Log useful settings without exposing credentials."""
+        model_options = ConfigManager.get_config_section('model_options')
+        api_options = model_options.get('api', {})
+        recording_options = ConfigManager.get_config_section('recording_options')
+        endpoint = urlparse(api_options.get('base_url') or '')
+        endpoint_display = f"{endpoint.scheme}://{endpoint.netloc}{endpoint.path}"
+        logger.info(
+            "Configuration: use_api=%s, endpoint=%s, api_model=%s, "
+            "api_key=%s, proxy_enabled=%s, proxy_url=%s, recording_mode=%s, "
+            "sound_device=%r, sample_rate=%s, input_method=%s",
+            model_options.get('use_api'),
+            endpoint_display,
+            api_options.get('model'),
+            'set' if os.getenv('OPENAI_API_KEY') else 'missing',
+            api_options.get('use_proxy'),
+            'set' if (api_options.get('proxy_url') or os.getenv('OPENAI_PROXY_URL')) else 'missing',
+            recording_options.get('recording_mode'),
+            recording_options.get('sound_device'),
+            recording_options.get('sample_rate'),
+            ConfigManager.get_config_value('post_processing', 'input_method'),
+        )
+
     def initialize_components(self):
         """
         Initialize the components of the application.
         """
+        logger.info("Initializing application components")
         self.input_simulator = InputSimulator()
 
         self.key_listener = KeyListener()
@@ -123,6 +176,7 @@ class WhisperWriterApp(QObject):
         """
         Called when the activation key combination is pressed.
         """
+        logger.info("Activation shortcut pressed")
         if self.result_thread and self.result_thread.isRunning():
             recording_mode = ConfigManager.get_config_value('recording_options', 'recording_mode')
             if recording_mode == 'press_to_toggle':
@@ -137,6 +191,7 @@ class WhisperWriterApp(QObject):
         """
         Called when the activation key combination is released.
         """
+        logger.info("Activation shortcut released")
         if ConfigManager.get_config_value('recording_options', 'recording_mode') == 'hold_to_record':
             if self.result_thread and self.result_thread.isRunning():
                 self.result_thread.stop_recording()
@@ -148,6 +203,7 @@ class WhisperWriterApp(QObject):
         if self.result_thread and self.result_thread.isRunning():
             return
 
+        logger.info("Starting recording/transcription thread")
         self.result_thread = ResultThread(self.local_model)
         if not ConfigManager.get_config_value('misc', 'hide_status_window'):
             self.result_thread.statusSignal.connect(self.status_window.updateStatus)
@@ -166,6 +222,7 @@ class WhisperWriterApp(QObject):
         """
         When the transcription is complete, type the result and start listening for the activation key again.
         """
+        logger.info("Received transcription result (characters=%s, empty=%s)", len(result), not bool(result.strip()))
         self.input_simulator.typewrite(result)
 
         if ConfigManager.get_config_value('misc', 'noise_on_completion'):

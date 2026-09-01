@@ -1,5 +1,9 @@
+import logging
 import yaml
 import os
+
+
+logger = logging.getLogger(__name__)
 
 class ConfigManager:
     _instance = None
@@ -137,6 +141,5 @@ class ConfigManager:
 
     @classmethod
     def console_print(cls, message):
-        """Print a message to the console if enabled in the configuration."""
-        if cls._instance and cls._instance.config['misc']['print_to_terminal']:
-            print(message)
+        """Write application status to the diagnostic log."""
+        logger.info("%s", message)
